@@ -384,7 +384,7 @@ def main():
             """)
         
         with col2:
-            st.markdown("### 📈 対応銘柄")
+            st.markdown("### 📈 対応銘柄の例")
             st.markdown("""
             **米国株**
             - AAPL (Apple)
