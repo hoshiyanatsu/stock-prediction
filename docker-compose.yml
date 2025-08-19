@@ -2,14 +2,23 @@ version: '3.8'
 
 services:
   stock-prediction:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8501:8501"
     environment:
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
     volumes:
-      # オプション: ログやキャッシュを永続化したい場合
-      - ./logs:/app/logs
+      # プロジェクト一式を /app にバインドマウント（保存→即時反映）
+      - ./:/app
+    command: >
+      streamlit run app.py
+      --server.headless=true
+      --server.address=0.0.0.0
+      --server.port=8501
+      --server.fileWatcherType=auto
+      --server.runOnSave=true
     restart: unless-stopped
     container_name: stock-prediction-app

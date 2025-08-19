@@ -213,10 +213,14 @@ def create_prediction_chart(historical_data: pd.DataFrame, forecast: pd.DataFram
                 showlegend=False
             ))
     
-    # Y軸の範囲を設定（0以上を確保）
-    all_values = list(actual_values) + list(forecast['yhat'])
-    y_min = 0
-    y_max = max(all_values) * 1.2  # 最大値の20%余裕を持たせる
+    min_act = float(np.nanmin(actual_values))
+    max_act = float(np.nanmax(actual_values))
+
+    pad_ratio = 0.25
+    pad = (max_act - min_act) * pad_ratio
+
+    y_min = max(0.0, min_act - pad)
+    y_max = float(np.nanmax(np.r_[max_act, forecast['yhat'].values])) * 1.2
     
     # グラフのレイアウト設定
     fig.update_layout(
