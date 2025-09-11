@@ -5,8 +5,9 @@ from prophet import Prophet
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import warnings
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings('ignore')
 
@@ -121,7 +122,7 @@ def predict_stock_price(data: pd.DataFrame, periods: int = 1825) -> Optional[pd.
 
 
 def create_prediction_chart(historical_data: pd.DataFrame, forecast: pd.DataFrame, 
-                          company_name: str, symbol: str, current_actual_price: float) -> go.Figure:
+                        company_name: str, symbol: str, current_actual_price: float) -> go.Figure:
     """
     予測結果のグラフを作成する関数
     
@@ -285,6 +286,162 @@ def calculate_prediction_summary(historical_data: pd.DataFrame,
     return summary
 
 
+def perform_backtest(data: pd.DataFrame, test_periods: List[int] = [30, 90, 180, 365]) -> Dict:
+    """
+    バックテストを実行する関数
+    
+    Args:
+        data: 株価データ
+        test_periods: テスト期間のリスト（日数）
+        
+    Returns:
+        バックテスト結果の辞書
+    """
+    results = {}
+    
+    for period in test_periods:
+        if len(data) < period + 100:  # 最低限の学習データを確保
+            continue
+            
+        # 学習データとテストデータに分割
+        train_data = data.iloc[:-period].copy()
+        test_data = data.iloc[-period:].copy()
+        
+        try:
+            # モデルの学習
+            model = Prophet(
+                changepoint_prior_scale=0.10 if len(train_data) > 500 else 0.05,
+                yearly_seasonality=True,
+                weekly_seasonality=True,
+                daily_seasonality=False,
+                interval_width=0.95
+            )
+            
+            model.fit(train_data[['ds', 'y']])
+            
+            # 予測実行
+            future = model.make_future_dataframe(periods=period)
+            forecast = model.predict(future)
+            
+            # 予測結果を元のスケールに戻す
+            forecast['yhat'] = np.expm1(forecast['yhat'])
+            forecast['yhat_lower'] = np.expm1(forecast['yhat_lower'])
+            forecast['yhat_upper'] = np.expm1(forecast['yhat_upper'])
+            
+            # テスト期間の予測値を取得
+            test_forecast = forecast.iloc[-period:].copy()
+            test_actual = np.expm1(test_data['y'].values)
+            test_predicted = test_forecast['yhat'].values
+            
+            # 精度指標を計算
+            mae = mean_absolute_error(test_actual, test_predicted)
+            rmse = np.sqrt(mean_squared_error(test_actual, test_predicted))
+            mape = np.mean(np.abs((test_actual - test_predicted) / test_actual)) * 100
+            
+            # 方向性の精度（上昇/下降の予測精度）
+            actual_direction = np.diff(test_actual) > 0
+            predicted_direction = np.diff(test_predicted) > 0
+            direction_accuracy = np.mean(actual_direction == predicted_direction) * 100
+            
+            results[f'{period}日'] = {
+                'mae': mae,
+                'rmse': rmse,
+                'mape': mape,
+                'direction_accuracy': direction_accuracy,
+                'test_actual': test_actual,
+                'test_predicted': test_predicted,
+                'test_dates': test_data['ds'].values
+            }
+            
+        except Exception as e:
+            st.warning(f"{period}日のバックテストでエラー: {str(e)}")
+            continue
+    
+    return results
+
+
+def create_backtest_chart(backtest_results: Dict, symbol: str) -> go.Figure:
+    """
+    バックテスト結果のグラフを作成する関数
+    
+    Args:
+        backtest_results: バックテスト結果
+        symbol: 銘柄コード
+        
+    Returns:
+        Plotlyグラフオブジェクト
+    """
+    fig = go.Figure()
+    
+    colors = ['blue', 'red', 'green', 'purple']
+    
+    for i, (period, result) in enumerate(backtest_results.items()):
+        color = colors[i % len(colors)]
+        
+        # 実際の値
+        fig.add_trace(go.Scatter(
+            x=result['test_dates'],
+            y=result['test_actual'],
+            mode='lines',
+            name=f'実際値 ({period})',
+            line=dict(color=color, width=2)
+        ))
+        
+        # 予測値
+        fig.add_trace(go.Scatter(
+            x=result['test_dates'],
+            y=result['test_predicted'],
+            mode='lines',
+            name=f'予測値 ({period})',
+            line=dict(color=color, width=2, dash='dash')
+        ))
+    
+    fig.update_layout(
+        title=f'{symbol} - バックテスト結果',
+        xaxis_title='日付',
+        yaxis_title='株価 (¥)',
+        hovermode='x unified',
+        width=800,
+        height=500,
+        margin=dict(l=50, r=50, t=50, b=50)
+    )
+    
+    return fig
+
+
+def display_backtest_metrics(backtest_results: Dict):
+    """
+    バックテスト指標を表示する関数
+    
+    Args:
+        backtest_results: バックテスト結果
+    """
+    st.subheader("📊 バックテスト精度指標")
+    
+    # メトリクス表を作成
+    metrics_data = []
+    for period, result in backtest_results.items():
+        metrics_data.append({
+            'テスト期間': period,
+            'MAE (平均絶対誤差)': f"{result['mae']:.2f}",
+            'RMSE (二乗平均平方根誤差)': f"{result['rmse']:.2f}",
+            'MAPE (%)': f"{result['mape']:.1f}%",
+            '方向性精度 (%)': f"{result['direction_accuracy']:.1f}%"
+        })
+    
+    df_metrics = pd.DataFrame(metrics_data)
+    st.dataframe(df_metrics, use_container_width=True)
+    
+    # 指標の説明
+    with st.expander("📖 指標の説明"):
+        st.markdown("""
+        - **MAE (平均絶対誤差)**: 予測値と実際値の差の絶対値の平均。小さいほど良い。
+        - **RMSE (二乗平均平方根誤差)**: 予測誤差の二乗平均の平方根。小さいほど良い。
+        - **MAPE (平均絶対パーセント誤差)**: 予測誤差の割合。小さいほど良い。
+        - **方向性精度**: 株価の上昇/下降方向の予測精度。高いほど良い。
+        """)
+
+
 def main():
     """メイン関数"""
     st.set_page_config(
@@ -305,15 +462,44 @@ def main():
             help="米国株: AAPL, GOOGL など / 日本株: 7203.T, 9984.T など"
         )
         
-        predict_button = st.button("予測開始", type="primary")
+        # タブ選択
+        analysis_type = st.radio(
+            "分析タイプ",
+            ["予測分析", "バックテスト"],
+            help="予測分析: 将来の株価を予測 / バックテスト: 過去データで予測精度を検証"
+        )
+        
+        if analysis_type == "予測分析":
+            predict_button = st.button("予測開始", type="primary")
+            backtest_button = False
+        else:
+            predict_button = False
+            backtest_button = st.button("バックテスト開始", type="primary")
+            
+            # バックテスト設定
+            st.markdown("### ⚙️ バックテスト設定")
+            test_periods = st.multiselect(
+                "テスト期間（日数）",
+                [30, 90, 180, 365, 730],
+                default=[30, 90, 180, 365],
+                help="選択した期間でバックテストを実行します"
+            )
         
         st.markdown("---")
         st.markdown("### 📝 使用方法")
-        st.markdown("""
-        1. 銘柄コードを入力
-        2. 「予測開始」をクリック
-        3. グラフと予測結果を確認
-        """)
+        if analysis_type == "予測分析":
+            st.markdown("""
+            1. 銘柄コードを入力
+            2. 「予測開始」をクリック
+            3. グラフと予測結果を確認
+            """)
+        else:
+            st.markdown("""
+            1. 銘柄コードを入力
+            2. テスト期間を選択
+            3. 「バックテスト開始」をクリック
+            4. 予測精度を確認
+            """)
         
         st.markdown("### ⚠️ 免責事項")
         st.markdown("""
@@ -368,7 +554,62 @@ def main():
             st.markdown("**信頼区間について**")
             st.markdown("予測値の周りの薄いオレンジ色の範囲は95%信頼区間を示しています。")
     
-    elif predict_button and not symbol:
+    elif backtest_button and symbol:
+        with st.spinner("バックテスト実行中..."):
+            # データ取得
+            result = get_stock_data(symbol)
+            if result is None:
+                st.error("❌ 銘柄が見つかりません。正しい銘柄コードを入力してください。")
+                return
+            
+            historical_data, company_name, current_actual_price = result
+            
+            # バックテスト実行
+            if 'test_periods' not in locals():
+                test_periods = [30, 90, 180, 365]
+            
+            backtest_results = perform_backtest(historical_data, test_periods)
+            
+            if not backtest_results:
+                st.error("❌ バックテストを実行できませんでした。データが不足している可能性があります。")
+                return
+        
+        # バックテスト結果表示
+        st.subheader(f"🔍 {company_name} ({symbol}) - バックテスト結果")
+        
+        # グラフ表示
+        chart = create_backtest_chart(backtest_results, symbol)
+        st.plotly_chart(chart, use_container_width=True)
+        
+        # 精度指標表示
+        display_backtest_metrics(backtest_results)
+        
+        # 総合評価
+        st.subheader("📈 総合評価")
+        
+        # 平均MAPE計算
+        avg_mape = np.mean([result['mape'] for result in backtest_results.values()])
+        avg_direction_accuracy = np.mean([result['direction_accuracy'] for result in backtest_results.values()])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("平均予測誤差 (MAPE)", f"{avg_mape:.1f}%")
+        with col2:
+            st.metric("平均方向性精度", f"{avg_direction_accuracy:.1f}%")
+        
+        # 評価コメント
+        if avg_mape < 10:
+            evaluation = "🟢 非常に良好"
+        elif avg_mape < 20:
+            evaluation = "🟡 良好"
+        elif avg_mape < 30:
+            evaluation = "🟠 普通"
+        else:
+            evaluation = "🔴 要改善"
+        
+        st.markdown(f"**モデル評価**: {evaluation}")
+    
+    elif (predict_button or backtest_button) and not symbol:
         st.warning("⚠️ 銘柄コードを入力してください。")
     
     else:
@@ -408,6 +649,7 @@ def main():
             - **データソース**: Yahoo Finance
             - **信頼区間**: 95%
             - **キャッシュ**: 1時間
+            - **バックテスト**: 複数期間対応
             """)
 
 

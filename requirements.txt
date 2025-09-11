@@ -3,3 +3,4 @@ yfinance
 streamlit
 plotly
 pandas
+scikit-learn
